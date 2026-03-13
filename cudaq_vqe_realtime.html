@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CUDA-Q VQE · Real GPU Quantum Solver</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600&family=Bebas+Neue&family=Barlow:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg:      #040810;
+  --bg1:     #080f1c;
+  --bg2:     #0c1827;
+  --panel:   #0a1520;
+  --border:  #162235;
+  --border2: #1e3050;
+  --nv:      #76b900;
+  --nv2:     #4a7800;
+  --teal:    #00e5cc;
+  --teal2:   #00b8a0;
+  --amber:   #ffaa00;
+  --red:     #ff4455;
+  --blue:    #3b82f6;
+  --purple:  #a855f7;
+  --text:    #d0ddf0;
+  --text2:   #6a8aaa;
+  --text3:   #2d4060;
+  --ok:      #22c55e;
+  --warn:    #f97316;
+  --mono:    'IBM Plex Mono', monospace;
+  --head:    'Bebas Neue', sans-serif;
+  --body:    'Barlow', sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--body);
+  display:flex;
+  flex-direction:column;
+}
+
+/* scanline overlay */
+body::after{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.04) 2px,rgba(0,0,0,0.04) 4px);
+}
+
+/* ── TOPBAR ── */
+#topbar{
+  display:flex;align-items:center;
+  height:52px;padding:0 20px;gap:16px;
+  background:var(--bg1);
+  border-bottom:1px solid var(--border2);
+  flex-shrink:0;
+  position:relative;z-index:10;
+}
+.logo{
+  font-family:var(--head);
+  font-size:26px;letter-spacing:2px;
+  background:linear-gradient(135deg,var(--nv),var(--teal));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+}
+.logo-sub{
+  font-family:var(--mono);font-size:9px;color:var(--text3);
+  letter-spacing:3px;text-transform:uppercase;margin-left:2px;margin-top:2px;
+}
+#wsStatus{
+  display:flex;align-items:center;gap:6px;
+  font-family:var(--mono);font-size:10px;
+  padding:4px 12px;border-radius:2px;
+  border:1px solid var(--border2);
+  color:var(--text2);
+  cursor:pointer;
+  transition:all .2s;
+}
+#wsDot{width:7px;height:7px;border-radius:50%;background:var(--text3);transition:background .3s}
+#wsStatus.connected #wsDot{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+#wsStatus.error #wsDot{background:var(--red);box-shadow:0 0 6px var(--red)}
+.top-sep{flex:1}
+.mol-tabs{display:flex;gap:2px;background:var(--bg2);border:1px solid var(--border);border-radius:3px;padding:2px}
+.mol-tab{
+  font-family:var(--mono);font-size:11px;
+  padding:5px 14px;border-radius:2px;border:none;
+  background:transparent;color:var(--text2);cursor:pointer;transition:all .15s;
+}
+.mol-tab.active{background:var(--teal);color:#000;font-weight:600}
+.mol-tab:hover:not(.active){background:rgba(0,229,204,.1);color:var(--teal)}
+.mol-tab:disabled{opacity:.4;cursor:not-allowed}
+#runBtn{
+  font-family:var(--mono);font-size:11px;font-weight:600;
+  padding:8px 20px;border-radius:3px;border:none;cursor:pointer;
+  background:linear-gradient(135deg,var(--nv),var(--nv2));
+  color:#000;letter-spacing:1px;
+  display:flex;align-items:center;gap:8px;
+  transition:all .15s;
+}
+#runBtn:hover{filter:brightness(1.1)}
+#runBtn:disabled{opacity:.5;cursor:not-allowed;filter:none}
+#runBtn.running{background:linear-gradient(135deg,#1a3a60,#0d2240);color:var(--teal)}
+#cancelBtn{
+  font-family:var(--mono);font-size:10px;
+  padding:8px 14px;border-radius:3px;
+  border:1px solid var(--red);
+  background:transparent;color:var(--red);cursor:pointer;
+  display:none;transition:all .15s;
+}
+#cancelBtn:hover{background:rgba(255,68,85,.1)}
+
+/* ── MAIN LAYOUT: 3 columns ── */
+#main{
+  display:grid;
+  grid-template-columns:260px 1fr 260px;
+  flex:1;overflow:hidden;
+  gap:0;
+}
+
+/* ── PANELS ── */
+.col{
+  display:flex;flex-direction:column;overflow:hidden;
+  border-right:1px solid var(--border);
+}
+.col:last-child{border-right:none}
+.section{
+  padding:14px 16px;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.section.grow{flex:1;overflow:hidden;display:flex;flex-direction:column}
+.sec-label{
+  font-family:var(--mono);font-size:9px;letter-spacing:2.5px;
+  text-transform:uppercase;color:var(--text3);
+  margin-bottom:10px;display:flex;align-items:center;gap:8px;
+}
+.sec-label::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* ── GPU CARDS ── */
+#gpuCards{display:flex;flex-direction:column;gap:8px}
+.gpu-card{
+  background:var(--bg2);border:1px solid var(--border2);border-radius:4px;
+  padding:10px 12px;
+}
+.gpu-name{
+  font-family:var(--head);font-size:16px;letter-spacing:1px;
+  color:var(--nv);line-height:1;margin-bottom:4px;
+}
+.gpu-meta{font-family:var(--mono);font-size:9px;color:var(--text3);line-height:1.6;margin-bottom:8px}
+.gpu-bars{display:flex;flex-direction:column;gap:4px}
+.bar-row{display:flex;flex-direction:column;gap:2px}
+.bar-head{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9px;color:var(--text2)}
+.bar-track{height:4px;background:var(--bg);border-radius:2px;overflow:hidden}
+.bar-fill{height:100%;border-radius:2px;transition:width .4s ease}
+.bar-fill.compute{background:linear-gradient(90deg,var(--nv2),var(--nv))}
+.bar-fill.mem{background:linear-gradient(90deg,var(--teal2),var(--teal))}
+.bar-fill.temp{background:linear-gradient(90deg,#2563eb,var(--amber))}
+
+/* ── MOL INFO ── */
+.kv-grid{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-family:var(--mono);font-size:10px}
+.kv-key{color:var(--text3);white-space:nowrap}
+.kv-val{color:var(--text)}
+.kv-val.teal{color:var(--teal)}
+.kv-val.nv{color:var(--nv)}
+.kv-val.amber{color:var(--amber)}
+.kv-val.ok{color:var(--ok)}
+.kv-val.warn{color:var(--warn)}
+.kv-val.purple{color:var(--purple)}
+
+/* ── CIRCUIT CANVAS ── */
+#circuitWrap{
+  flex:1;overflow:auto;position:relative;
+  background:var(--bg);
+  scrollbar-width:thin;scrollbar-color:var(--border2) transparent;
+}
+#circuitSVG{
+  display:block;
+  min-width:100%;
+}
+.circuit-empty{
+  display:flex;align-items:center;justify-content:center;
+  height:100%;
+  font-family:var(--mono);font-size:11px;color:var(--text3);
+  flex-direction:column;gap:8px;
+}
+
+/* ── ENERGY CHART ── */
+#chartWrap{height:200px;position:relative;padding:10px 14px 14px}
+#energyChart{width:100%!important;height:100%!important}
+
+/* ── STATS ROW ── */
+.stats-row{
+  display:grid;grid-template-columns:repeat(4,1fr);
+  gap:0;border-top:1px solid var(--border);
+  flex-shrink:0;
+}
+.stat-cell{
+  padding:10px 14px;
+  border-right:1px solid var(--border);
+  text-align:center;
+}
+.stat-cell:last-child{border-right:none}
+.stat-v{font-family:var(--head);font-size:22px;letter-spacing:1px;color:var(--teal);line-height:1}
+.stat-l{font-family:var(--mono);font-size:8px;color:var(--text3);margin-top:3px;letter-spacing:1px}
+
+/* ── HAMILTONIAN ── */
+#hamilWrap{
+  flex:1;overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:var(--border2) transparent;
+  font-family:var(--mono);font-size:10px;
+}
+.hamil-term{
+  display:flex;align-items:baseline;justify-content:space-between;
+  padding:3px 8px;border-radius:2px;
+  transition:background .1s;
+}
+.hamil-term:hover{background:rgba(255,255,255,.03)}
+.hcoeff.pos{color:var(--teal)}
+.hcoeff.neg{color:var(--amber)}
+.hops{color:var(--text2)}
+
+/* ── LOG ── */
+#logWrap{
+  flex:1;overflow-y:auto;padding:8px 12px;
+  font-family:var(--mono);font-size:9.5px;line-height:1.75;
+  scrollbar-width:thin;scrollbar-color:var(--border2) transparent;
+}
+.log-line{display:flex;gap:8px;align-items:baseline}
+.lt{color:var(--text3);flex-shrink:0;font-size:9px}
+.ls{flex-shrink:0;font-weight:600}
+.ls.cuda{color:var(--nv)}
+.ls.vqe{color:var(--teal)}
+.ls.sys{color:var(--blue)}
+.ls.err{color:var(--red)}
+.lm{color:var(--text2)}
+.lm.hi{color:var(--text);font-weight:500}
+.lm.ok{color:var(--ok)}
+.lm.warn{color:var(--warn)}
+.lm.err{color:var(--red)}
+
+/* ── PROGRESS ── */
+#progressWrap{height:3px;background:var(--bg2);flex-shrink:0}
+#progressFill{height:100%;width:0%;background:linear-gradient(90deg,var(--teal2),var(--nv));transition:width .3s ease}
+
+/* ── CONNECTION ERROR OVERLAY ── */
+#connOverlay{
+  position:fixed;inset:0;background:rgba(4,8,16,.92);
+  z-index:1000;display:flex;align-items:center;justify-content:center;
+  flex-direction:column;gap:16px;
+  font-family:var(--mono);
+}
+#connOverlay.hidden{display:none}
+.overlay-box{
+  background:var(--bg1);border:1px solid var(--border2);border-radius:6px;
+  padding:32px 40px;text-align:center;max-width:480px;
+}
+.overlay-title{font-family:var(--head);font-size:28px;letter-spacing:2px;color:var(--amber);margin-bottom:12px}
+.overlay-msg{font-size:11px;color:var(--text2);line-height:1.8;margin-bottom:20px}
+.overlay-code{
+  background:var(--bg2);border:1px solid var(--border);border-radius:4px;
+  padding:12px 16px;font-size:10px;color:var(--nv);text-align:left;
+  margin:8px 0;line-height:1.9;
+}
+#connectBtn{
+  font-family:var(--mono);font-size:11px;padding:10px 24px;
+  border-radius:3px;border:1px solid var(--teal);
+  background:rgba(0,229,204,.08);color:var(--teal);cursor:pointer;
+  transition:all .2s;margin-top:8px;
+}
+#connectBtn:hover{background:rgba(0,229,204,.2)}
+#wsUrlInput{
+  font-family:var(--mono);font-size:11px;
+  background:var(--bg2);border:1px solid var(--border2);
+  color:var(--text);padding:6px 12px;border-radius:3px;
+  width:260px;text-align:center;
+}
+
+/* animation */
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+.spin{display:inline-block;animation:spin 1.2s linear infinite}
+</style>
+</head>
+<body>
+
+<!-- CONNECTION OVERLAY -->
+<div id="connOverlay">
+  <div class="overlay-box">
+    <div class="overlay-title">⚡ CUDA-Q VQE</div>
+    <div class="overlay-msg">
+      此 Demo 需連接您的 Ubuntu + RTX 5080 後端伺服器。<br>
+      請先在您的機器上執行：
+    </div>
+    <div class="overlay-code">
+      # 安裝依賴<br>
+      pip install cudaq pyscf openfermion openfermionpyscf websockets scipy<br><br>
+      # 啟動後端<br>
+      python vqe_server.py
+    </div>
+    <div style="margin-top:16px;display:flex;flex-direction:column;align-items:center;gap:10px">
+      <input id="wsUrlInput" value="ws://localhost:8765" placeholder="ws://your-server:8765">
+      <button id="connectBtn" onclick="connectWS()">連接後端伺服器</button>
+    </div>
+    <div id="overlayError" style="font-family:var(--mono);font-size:10px;color:var(--red);margin-top:12px;min-height:16px"></div>
+  </div>
+</div>
+
+<!-- TOPBAR -->
+<div id="topbar">
+  <div>
+    <div class="logo">CUDA-Q · VQE</div>
+    <div class="logo-sub">Real GPU Quantum Molecular Solver</div>
+  </div>
+  <div id="wsStatus" onclick="showOverlay()" title="Click to reconnect">
+    <span id="wsDot"></span>
+    <span id="wsLabel">disconnected</span>
+  </div>
+  <div class="top-sep"></div>
+  <div class="mol-tabs" id="molTabs">
+    <button class="mol-tab active" data-mol="H2" onclick="selectMol(this)">H₂</button>
+    <button class="mol-tab" data-mol="LiH" onclick="selectMol(this)">LiH</button>
+    <button class="mol-tab" data-mol="BeH2" onclick="selectMol(this)">BeH₂</button>
+    <button class="mol-tab" data-mol="H2O" onclick="selectMol(this)">H₂O</button>
+  </div>
+  <button id="runBtn" onclick="runVQE()" disabled>▶ RUN VQE</button>
+  <button id="cancelBtn" onclick="cancelVQE()">■ CANCEL</button>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+
+  <!-- LEFT COL -->
+  <div class="col">
+    <div class="section">
+      <div class="sec-label">GPU Hardware</div>
+      <div id="gpuCards">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text3);text-align:center;padding:20px 0">
+          Connecting to backend…
+        </div>
+      </div>
+    </div>
+    <div class="section grow">
+      <div class="sec-label">Molecule</div>
+      <div class="kv-grid" id="molInfoGrid">
+        <span class="kv-key">Name</span><span class="kv-val teal" id="mi-name">—</span>
+        <span class="kv-key">Basis</span><span class="kv-val" id="mi-basis">—</span>
+        <span class="kv-key">Electrons</span><span class="kv-val nv" id="mi-elec">—</span>
+        <span class="kv-key">Qubits</span><span class="kv-val amber" id="mi-qubits">—</span>
+        <span class="kv-key">UCCSD Params</span><span class="kv-val purple" id="mi-params">—</span>
+        <span class="kv-key">Hamil. Terms</span><span class="kv-val" id="mi-terms">—</span>
+        <span class="kv-key">Circuit Depth</span><span class="kv-val" id="mi-depth">—</span>
+        <span class="kv-key">FCI Ref.</span><span class="kv-val ok" id="mi-fci">—</span>
+      </div>
+    </div>
+    <div class="section grow" style="overflow:hidden;display:flex;flex-direction:column">
+      <div class="sec-label">Hamiltonian Terms</div>
+      <div id="hamilWrap">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text3);text-align:center;padding:20px 0">
+          Run VQE to view Pauli terms
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER COL -->
+  <div class="col">
+    <div class="section" style="padding:0;flex-shrink:0">
+      <div id="progressWrap"><div id="progressFill"></div></div>
+    </div>
+
+    <div class="section" style="flex:1;overflow:hidden;display:flex;flex-direction:column;padding:14px 0 0">
+      <div class="sec-label" style="padding:0 16px">
+        Quantum Circuit
+        <span id="circuitInfo" style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-left:6px"></span>
+      </div>
+      <div id="circuitWrap">
+        <div class="circuit-empty">
+          <span style="font-size:24px">⊗</span>
+          <span>Select molecule & connect backend to view circuit</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-cell">
+        <div class="stat-v" id="s-energy" style="font-size:15px;letter-spacing:0">—</div>
+        <div class="stat-l">ENERGY (Ha)</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-v" id="s-error" style="color:var(--ok)">—</div>
+        <div class="stat-l">Δ FCI (mHa)</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-v" id="s-iter" style="color:var(--amber)">0</div>
+        <div class="stat-l">ITERATIONS</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-v" id="s-time" style="color:var(--purple)">—</div>
+        <div class="stat-l">ELAPSED (s)</div>
+      </div>
+    </div>
+
+    <div id="chartWrap">
+      <canvas id="energyChart"></canvas>
+    </div>
+  </div>
+
+  <!-- RIGHT COL -->
+  <div class="col">
+    <div class="section grow" style="overflow:hidden;display:flex;flex-direction:column">
+      <div class="sec-label">VQE Convergence Log</div>
+      <div id="logWrap"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── STATE ──────────────────────────────────────────────────────────────────
+let ws = null;
+let running = false;
+let currentMol = 'H2';
+let chart = null;
+let gpuPollTimer = null;
+let logTimer = 0;
+let circuitDesc = null;
+let activeGates = new Set();
+
+const MOL_META = {
+  H2:   { name:'H₂',  fci:'-1.137270', basis:'STO-3G' },
+  LiH:  { name:'LiH', fci:'-7.882381', basis:'STO-3G' },
+  BeH2: { name:'BeH₂',fci:'-15.736688',basis:'STO-3G' },
+  H2O:  { name:'H₂O', fci:'-75.012388',basis:'STO-3G' },
+};
+
+// ── WEBSOCKET ──────────────────────────────────────────────────────────────
+function connectWS() {
+  const url = document.getElementById('wsUrlInput').value.trim() || 'ws://localhost:8765';
+  document.getElementById('overlayError').textContent = '';
+  document.getElementById('connectBtn').textContent = '⏳ Connecting…';
+
+  try { ws && ws.close(); } catch(_) {}
+
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    setWsStatus('connected', url.replace('ws://',''));
+    document.getElementById('connOverlay').classList.add('hidden');
+    document.getElementById('connectBtn').textContent = '連接後端伺服器';
+    ws.send(JSON.stringify({cmd:'get_molecules'}));
+    startGpuPoll();
+    enableUI(true);
+    addLog('sys','Connected to CUDA-Q backend: ' + url, 'hi');
+  };
+
+  ws.onmessage = e => handleMessage(JSON.parse(e.data));
+
+  ws.onerror = () => {
+    setWsStatus('error','error');
+    document.getElementById('overlayError').textContent =
+      '連接失敗 – 請確認後端正在執行，且地址正確';
+    document.getElementById('connectBtn').textContent = '重試連接';
+    enableUI(false);
+  };
+
+  ws.onclose = () => {
+    setWsStatus('closed', 'disconnected');
+    clearInterval(gpuPollTimer);
+    if (running) { setRunning(false); }
+    enableUI(false);
+  };
+}
+
+function showOverlay() {
+  document.getElementById('connOverlay').classList.remove('hidden');
+}
+
+function setWsStatus(state, label) {
+  const el = document.getElementById('wsStatus');
+  el.className = state;
+  document.getElementById('wsLabel').textContent = label;
+}
+
+// ── MESSAGE HANDLER ────────────────────────────────────────────────────────
+function handleMessage(msg) {
+  switch(msg.type) {
+
+    case 'gpu_info':
+      renderGPUCards(msg.data);
+      break;
+
+    case 'gpu_live':
+      updateGPULive(msg.data);
+      break;
+
+    case 'molecules':
+      // backend confirmed molecule list (already hard-coded in MOL_META)
+      break;
+
+    case 'mol_info':
+      document.getElementById('mi-elec').textContent   = msg.n_electrons;
+      document.getElementById('mi-qubits').textContent  = msg.n_qubits;
+      document.getElementById('mi-params').textContent  = msg.n_params;
+      document.getElementById('mi-terms').textContent   = msg.ham_terms;
+      addLog('cuda', `Hamiltonian: ${msg.ham_terms} Pauli terms · built in ${msg.build_time}s`);
+      break;
+
+    case 'circuit':
+      circuitDesc = msg.circuit;
+      document.getElementById('mi-depth').textContent = msg.circuit.depth;
+      const gc = msg.circuit.gate_count;
+      document.getElementById('circuitInfo').textContent =
+        `${msg.circuit.n_qubits}Q · depth ${msg.circuit.depth} · `+
+        `X:${gc.X} RY:${gc.RY} RZ:${gc.RZ} CNOT:${gc.CNOT}`;
+      renderCircuitSVG(msg.circuit);
+      break;
+
+    case 'hamiltonian':
+      renderHamiltonian(msg.terms);
+      break;
+
+    case 'status':
+      addLog('sys', msg.msg, 'hi');
+      break;
+
+    case 'log':
+      addLog(msg.src?.toLowerCase() || 'sys', msg.msg);
+      break;
+
+    case 'iteration':
+      updateIteration(msg);
+      break;
+
+    case 'done':
+      onVQEDone(msg);
+      break;
+
+    case 'error':
+      addLog('err', 'ERROR: ' + msg.msg, 'err');
+      setRunning(false);
+      break;
+
+    case 'cancelled':
+      addLog('sys', 'VQE cancelled by user');
+      setRunning(false);
+      break;
+  }
+}
+
+// ── GPU CARDS ──────────────────────────────────────────────────────────────
+function renderGPUCards(info) {
+  const wrap = document.getElementById('gpuCards');
+  if (info.error) {
+    wrap.innerHTML = `<div style="font-family:var(--mono);font-size:10px;color:var(--warn);padding:8px">${info.error}</div>`;
+    return;
+  }
+  wrap.innerHTML = info.gpus.map(g => `
+    <div class="gpu-card" id="gpuCard${g.index}">
+      <div class="gpu-name">${g.name}</div>
+      <div class="gpu-meta">
+        Driver ${g.driver} &nbsp;·&nbsp; CUDA CC ${g.compute_cap}<br>
+        VRAM ${(g.mem_total_mb/1024).toFixed(1)} GB &nbsp;·&nbsp; ${g.sm_clock_mhz} MHz
+      </div>
+      <div class="gpu-bars">
+        <div class="bar-row">
+          <div class="bar-head"><span>COMPUTE</span><span id="gu${g.index}" style="color:var(--nv)">${g.gpu_util}%</span></div>
+          <div class="bar-track"><div class="bar-fill compute" id="gb${g.index}" style="width:${g.gpu_util}%"></div></div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-head"><span>VRAM</span><span id="gm${g.index}" style="color:var(--teal)">${(g.mem_used_mb/1024).toFixed(1)}/${(g.mem_total_mb/1024).toFixed(1)} GB</span></div>
+          <div class="bar-track"><div class="bar-fill mem" id="gmb${g.index}" style="width:${(g.mem_used_mb/g.mem_total_mb*100).toFixed(1)}%"></div></div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-head"><span>TEMP</span><span id="gt${g.index}" style="color:var(--amber)">${g.temp_c}°C</span></div>
+          <div class="bar-track"><div class="bar-fill temp" id="gtb${g.index}" style="width:${Math.min(100,g.temp_c/100*100)}%"></div></div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function updateGPULive(d) {
+  // Update card 0 by default (expand to multi-GPU if needed)
+  const idx = 0;
+  const set = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
+  const setW = (id, pct) => { const el = document.getElementById(id); if(el) el.style.width = pct+'%'; };
+  if (!d || d.gpu_util === undefined) return;
+  set(`gu${idx}`, d.gpu_util+'%');
+  setW(`gb${idx}`, d.gpu_util);
+  set(`gt${idx}`, d.temp+'°C');
+  setW(`gtb${idx}`, Math.min(100, d.temp));
+  if (d.mem_used) {
+    // need total to compute pct — get from card HTML
+    const card = document.getElementById(`gpuCard${idx}`);
+    if (card) {
+      const gmEl = document.getElementById(`gm${idx}`);
+      if (gmEl) {
+        const txt = gmEl.textContent;
+        const total = parseFloat(txt.split('/')[1]) || 16;
+        const used = (d.mem_used/1024).toFixed(1);
+        gmEl.textContent = `${used}/${total.toFixed(1)} GB`;
+        setW(`gmb${idx}`, (d.mem_used/1024/total*100).toFixed(1));
+      }
+    }
+  }
+}
+
+function startGpuPoll() {
+  clearInterval(gpuPollTimer);
+  gpuPollTimer = setInterval(() => {
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({cmd:'gpu_poll', gpu_index:0}));
+    }
+  }, 1500);
+}
+
+// ── CIRCUIT SVG RENDERER ───────────────────────────────────────────────────
+const GATE_COLORS = {
+  X:    '#76b900', // NV green
+  RY:   '#00e5cc', // teal
+  RZ:   '#ffaa00', // amber
+  CNOT: '#a855f7', // purple
+  MEAS: '#3b82f6', // blue
+};
+
+function renderCircuitSVG(desc) {
+  const wrap = document.getElementById('circuitWrap');
+  const nq = desc.n_qubits;
+
+  const WIRE_Y_START = 40;
+  const WIRE_STEP    = 32;
+  const LAYER_W      = 38;
+  const MARGIN_L     = 54;
+  const MARGIN_R     = 24;
+
+  // group gates by layer
+  const layers = {};
+  let maxLayer = 0;
+  for (const g of desc.gates) {
+    if (!layers[g.layer]) layers[g.layer] = [];
+    layers[g.layer].push(g);
+    if (g.layer > maxLayer) maxLayer = g.layer;
+  }
+
+  const svgW = MARGIN_L + (maxLayer + 1) * LAYER_W + MARGIN_R;
+  const svgH = WIRE_Y_START + nq * WIRE_STEP + 20;
+
+  let svg = `<svg id="circuitSVG" viewBox="0 0 ${svgW} ${svgH}" xmlns="http://www.w3.org/2000/svg"
+    style="width:${svgW}px;height:${svgH}px;display:block">`;
+
+  // background
+  svg += `<rect width="${svgW}" height="${svgH}" fill="#040810"/>`;
+
+  // wires
+  for (let q = 0; q < nq; q++) {
+    const y = WIRE_Y_START + q * WIRE_STEP;
+    svg += `<text x="4" y="${y+4}" fill="#2d4060" font-family="IBM Plex Mono" font-size="9">q${q}</text>`;
+    svg += `<line x1="${MARGIN_L-4}" y1="${y}" x2="${svgW-MARGIN_R+4}" y2="${y}"
+      stroke="#162235" stroke-width="1.5"/>`;
+  }
+
+  // gates
+  for (const [layerStr, gates] of Object.entries(layers)) {
+    const layer = parseInt(layerStr);
+    const cx = MARGIN_L + layer * LAYER_W;
+
+    for (const g of gates) {
+      const y1 = WIRE_Y_START + g.qubit * WIRE_STEP;
+      const color = GATE_COLORS[g.type] || '#8fa3c8';
+      const gid = `g_${layer}_${g.qubit}`;
+
+      if (g.type === 'CNOT') {
+        const y2 = WIRE_Y_START + g.qubit2 * WIRE_STEP;
+        svg += `<line x1="${cx}" y1="${y1}" x2="${cx}" y2="${y2}" stroke="${color}" stroke-width="1.2" opacity="0.7" id="${gid}"/>`;
+        svg += `<circle cx="${cx}" cy="${y1}" r="5" fill="${color}" id="${gid}c"/>`;
+        svg += `<circle cx="${cx}" cy="${y2}" r="8" fill="none" stroke="${color}" stroke-width="1.5" id="${gid}t"/>`;
+        svg += `<line x1="${cx-5}" y1="${y2}" x2="${cx+5}" y2="${y2}" stroke="${color}" stroke-width="1.5" id="${gid}t2"/>`;
+        svg += `<line x1="${cx}" y1="${y2-5}" x2="${cx}" y2="${y2+5}" stroke="${color}" stroke-width="1.5"/>`;
+      } else if (g.type === 'MEAS') {
+        svg += `<rect x="${cx-9}" y="${y1-9}" width="18" height="18" rx="2"
+          fill="#060e1a" stroke="${color}" stroke-width="1" id="${gid}"/>`;
+        // meter arc
+        svg += `<path d="M${cx-5},${y1+3} A5,5 0 0 1 ${cx+5},${y1+3}" fill="none" stroke="${color}" stroke-width="1"/>`;
+        svg += `<line x1="${cx}" y1="${y1+3}" x2="${cx+5}" y2="${y1-2}" stroke="${color}" stroke-width="1"/>`;
+      } else {
+        // box gate
+        const short = g.type.length > 2 ? g.type.slice(0,2) : g.type;
+        svg += `<rect x="${cx-11}" y="${y1-9}" width="22" height="18" rx="3"
+          fill="${color}18" stroke="${color}" stroke-width="1" id="${gid}"/>`;
+        svg += `<text x="${cx}" y="${y1+4}" fill="${color}" font-family="IBM Plex Mono"
+          font-size="8" text-anchor="middle" id="${gid}t">${short}</text>`;
+      }
+    }
+  }
+
+  svg += '</svg>';
+  wrap.innerHTML = svg;
+}
+
+// Highlight active gate during iteration
+function flashGates(iter, desc) {
+  if (!desc) return;
+  // pulse some RY/RZ gates based on iter
+  const paramGates = desc.gates.filter(g => g.param_idx !== undefined);
+  if (!paramGates.length) return;
+  const idx = iter % paramGates.length;
+  const g = paramGates[idx];
+  const el = document.getElementById(`g_${g.layer}_${g.qubit}`);
+  if (el) {
+    el.style.filter = 'brightness(3)';
+    setTimeout(() => { if(el) el.style.filter = ''; }, 200);
+  }
+}
+
+// ── HAMILTONIAN ────────────────────────────────────────────────────────────
+function renderHamiltonian(terms) {
+  const wrap = document.getElementById('hamilWrap');
+  wrap.innerHTML = terms.map(t => {
+    const pos = t.coeff >= 0;
+    const c = (pos ? '+' : '') + t.coeff.toFixed(6);
+    return `<div class="hamil-term">
+      <span class="hcoeff ${pos?'pos':'neg'}">${c}</span>
+      <span class="hops">${t.ops}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── ENERGY CHART ───────────────────────────────────────────────────────────
+function initChart() {
+  const ctx = document.getElementById('energyChart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'VQE Energy (Ha)',
+          data: [],
+          borderColor: ctx => {
+            const {chart, chartArea} = ctx;
+            if (!chartArea) return '#00e5cc';
+            const g = chart.ctx.createLinearGradient(chartArea.left, 0, chartArea.right, 0);
+            g.addColorStop(0, '#ff4455');
+            g.addColorStop(0.5, '#a855f7');
+            g.addColorStop(1, '#00e5cc');
+            return g;
+          },
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.4,
+          fill: false,
+        },
+        {
+          label: 'FCI Reference',
+          data: [],
+          borderColor: 'rgba(255,170,0,0.5)',
+          borderWidth: 1,
+          borderDash: [5,3],
+          pointRadius: 0,
+          fill: false,
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 0 },
+      plugins: {
+        legend: { labels: { color: '#2d4060', font: { family: 'IBM Plex Mono', size: 9 } } }
+      },
+      scales: {
+        x: { ticks: { color: '#2d4060', font: { family: 'IBM Plex Mono', size: 8 }, maxTicksLimit: 10 },
+             grid: { color: '#0c1827' } },
+        y: { ticks: { color: '#2d4060', font: { family: 'IBM Plex Mono', size: 8 } },
+             grid: { color: '#0c1827' } }
+      }
+    }
+  });
+}
+
+// ── VQE ITERATION UPDATE ───────────────────────────────────────────────────
+function updateIteration(msg) {
+  // chart
+  chart.data.labels.push(msg.iter);
+  chart.data.datasets[0].data.push(msg.energy);
+  chart.data.datasets[1].data.push(msg.fci_ref);
+  chart.update();
+
+  // stats
+  document.getElementById('s-energy').textContent = msg.energy.toFixed(6);
+  document.getElementById('s-error').textContent  = msg.error_mha.toFixed(3);
+  document.getElementById('s-iter').textContent   = msg.iter;
+  document.getElementById('s-time').textContent   = msg.elapsed;
+
+  // progress
+  const molMaxIter = {H2:80,LiH:150,BeH2:200,H2O:250};
+  const maxIt = molMaxIter[currentMol] || 100;
+  document.getElementById('progressFill').style.width = Math.min(100, msg.iter/maxIt*100) + '%';
+
+  // flash circuit gate
+  flashGates(msg.iter, circuitDesc);
+
+  // GPU live update from embedded data
+  if (msg.gpu_live && Object.keys(msg.gpu_live).length) {
+    updateGPULive(msg.gpu_live);
+  }
+
+  // log every 10 iters
+  if (msg.iter % 10 === 0) {
+    addLog('vqe', `iter ${msg.iter}: E=${msg.energy.toFixed(6)} Ha  ΔE=${msg.error_mha.toFixed(3)} mHa  t=${msg.elapsed}s`);
+  }
+}
+
+// ── VQE DONE ───────────────────────────────────────────────────────────────
+function onVQEDone(msg) {
+  setRunning(false);
+  document.getElementById('progressFill').style.width = '100%';
+  document.getElementById('s-energy').textContent = msg.final_energy.toFixed(6);
+  document.getElementById('s-error').textContent  = msg.error_mha.toFixed(3);
+  document.getElementById('s-time').textContent   = msg.total_time;
+
+  const conv = msg.converged;
+  addLog('vqe', `VQE complete · ${msg.n_iters} iterations · ${msg.total_time}s`, conv?'ok':'warn');
+  addLog('vqe', `Final: ${msg.final_energy.toFixed(6)} Ha  ΔE=${msg.error_mha.toFixed(3)} mHa  ${conv?'✓ Chemical accuracy':'✗ Not converged'}`, conv?'ok':'warn');
+}
+
+// ── UI HELPERS ─────────────────────────────────────────────────────────────
+function selectMol(btn) {
+  document.querySelectorAll('.mol-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentMol = btn.dataset.mol;
+  const m = MOL_META[currentMol];
+  document.getElementById('mi-name').textContent  = m.name;
+  document.getElementById('mi-basis').textContent = m.basis;
+  document.getElementById('mi-fci').textContent   = m.fci + ' Ha';
+  // reset unknowns
+  ['mi-elec','mi-qubits','mi-params','mi-terms','mi-depth'].forEach(id => {
+    document.getElementById(id).textContent = '—';
+  });
+  document.getElementById('circuitInfo').textContent = '';
+  document.getElementById('circuitWrap').innerHTML =
+    '<div class="circuit-empty"><span style="font-size:24px">⊗</span><span>Press RUN VQE to build circuit</span></div>';
+  // reset chart
+  chart.data.labels = [];
+  chart.data.datasets[0].data = [];
+  chart.data.datasets[1].data = [];
+  chart.update();
+  ['s-energy','s-error','s-time'].forEach(id => document.getElementById(id).textContent = '—');
+  document.getElementById('s-iter').textContent = '0';
+  document.getElementById('progressFill').style.width = '0';
+}
+
+function enableUI(enabled) {
+  document.getElementById('runBtn').disabled = !enabled;
+  document.querySelectorAll('.mol-tab').forEach(b => b.disabled = !enabled);
+}
+
+function setRunning(state) {
+  running = state;
+  const btn = document.getElementById('runBtn');
+  const cancel = document.getElementById('cancelBtn');
+  if (state) {
+    btn.classList.add('running');
+    btn.innerHTML = '<span class="spin">⏳</span> RUNNING…';
+    btn.disabled = true;
+    cancel.style.display = 'block';
+    document.querySelectorAll('.mol-tab').forEach(b => b.disabled = true);
+  } else {
+    btn.classList.remove('running');
+    btn.innerHTML = '▶ RUN VQE';
+    btn.disabled = false;
+    cancel.style.display = 'none';
+    document.querySelectorAll('.mol-tab').forEach(b => b.disabled = false);
+  }
+}
+
+function runVQE() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { showOverlay(); return; }
+  setRunning(true);
+  circuitDesc = null;
+  chart.data.labels = [];
+  chart.data.datasets[0].data = [];
+  chart.data.datasets[1].data = [];
+  chart.update();
+  document.getElementById('progressFill').style.width = '0';
+  document.getElementById('hamilWrap').innerHTML =
+    '<div style="font-family:var(--mono);font-size:10px;color:var(--text3);text-align:center;padding:12px">Building Hamiltonian…</div>';
+  document.getElementById('circuitWrap').innerHTML =
+    '<div class="circuit-empty"><span class="spin" style="font-size:24px">⊗</span><span>Compiling circuit on GPU…</span></div>';
+  addLog('sys', `Starting VQE · molecule: ${currentMol}`, 'hi');
+  ws.send(JSON.stringify({cmd:'run_vqe', molecule:currentMol, gpu_index:0}));
+}
+
+function cancelVQE() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({cmd:'cancel'}));
+  }
+}
+
+// ── LOG ────────────────────────────────────────────────────────────────────
+function addLog(src, msg, cls='') {
+  const wrap = document.getElementById('logWrap');
+  const t = new Date().toTimeString().slice(0,8);
+  const srcLabel = {vqe:'[VQE]',cuda:'[CUDAQ]',sys:'[SYS]',err:'[ERR]'}[src] || '[SYS]';
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="lt">${t}</span><span class="ls ${src}">${srcLabel}</span><span class="lm ${cls}">${msg}</span>`;
+  wrap.appendChild(line);
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+// ── BOOT ───────────────────────────────────────────────────────────────────
+initChart();
+// pre-fill mol info
+selectMol(document.querySelector('.mol-tab.active'));
+addLog('sys','CUDA-Q VQE Real GPU Frontend loaded');
+addLog('sys','Connect to your Ubuntu backend to begin');
+</script>
+</body>
+</html>
